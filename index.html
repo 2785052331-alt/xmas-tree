@@ -35,7 +35,7 @@
 </div>
 <div class="ui" id="foot">
   <div class="line">🎄 圣诞快乐 · 愿你被温柔以待 🎄</div>
-  <div class="line" id="visit">已有 <b id="busuanzi_value_site_uv">--</b> 位朋友来过</div>
+  <div class="line" id="visit">已有 <img id="visit_uv" alt="--" style="height:1.06em;vertical-align:-0.1em;filter:drop-shadow(0 0 7px rgba(255,190,120,.5))"> 位朋友来过</div>
   <div class="hint">拖动旋转 · 双指缩放 · 点一下换配色</div>
 </div>
 
@@ -1047,21 +1047,20 @@ applyPalette(0);
 requestAnimationFrame(frame);
 setTimeout(function(){ document.getElementById('title').classList.add('on'); }, 400);
 
-/* 访客打点：用图片请求（https 页面也能发到 http 接口，fetch 会被混合内容拦）
-   Chromium 系（微信安卓 XWeb 也是）能拿到品牌+型号，iPhone 只能靠屏幕尺寸推断 */
+/* 访客统计：一个 <img> 同时完成「打点」和「显示访客数」
+   图是服务端现画的 SVG，https 页面引 http 图片属被动混合内容，浏览器放行；fetch/XHR 会被拦 */
 (function(){
   if (QS.nostat === '1') return;
+  var el = document.getElementById('visit_uv');
+  if (!el) return;
+  var base = 'http://112.74.86.175/xmas-admin/count.svg'
+    + '?p=' + encodeURIComponent(location.host + location.pathname)
+    + '&sw=' + (screen.width||0) + '&sh=' + (screen.height||0)
+    + '&dpr=' + (window.devicePixelRatio||1)
+    + '&l=' + encodeURIComponent(navigator.language||'');
   var send = function(bm){
     try{
-      var im = new Image(1,1);
-      im.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none';
-      im.src = 'http://112.74.86.175/xmas-admin/pv.gif'
-        + '?p=' + encodeURIComponent(location.host + location.pathname)
-        + '&sw=' + (screen.width||0) + '&sh=' + (screen.height||0)
-        + '&dpr=' + (window.devicePixelRatio||1)
-        + '&bm=' + encodeURIComponent(bm || '')
-        + '&l=' + encodeURIComponent(navigator.language||'')
-        + '&r=' + Math.random();
+      el.src = base + '&bm=' + encodeURIComponent(bm || '') + '&r=' + Math.random();
     }catch(e){}
   };
   var uad = navigator.userAgentData;
@@ -1079,6 +1078,5 @@ setTimeout(function(){ document.getElementById('title').classList.add('on'); }, 
 })();
 })();
 </script>
-<script async src="https://busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
 </body>
 </html>
