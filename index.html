@@ -1046,6 +1046,37 @@ if (QS.noui === '1') {
 applyPalette(0);
 requestAnimationFrame(frame);
 setTimeout(function(){ document.getElementById('title').classList.add('on'); }, 400);
+
+/* 访客打点：用图片请求（https 页面也能发到 http 接口，fetch 会被混合内容拦）
+   Chromium 系（微信安卓 XWeb 也是）能拿到品牌+型号，iPhone 只能靠屏幕尺寸推断 */
+(function(){
+  if (QS.nostat === '1') return;
+  var send = function(bm){
+    try{
+      var im = new Image(1,1);
+      im.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none';
+      im.src = 'http://112.74.86.175/xmas-admin/pv.gif'
+        + '?p=' + encodeURIComponent(location.host + location.pathname)
+        + '&sw=' + (screen.width||0) + '&sh=' + (screen.height||0)
+        + '&dpr=' + (window.devicePixelRatio||1)
+        + '&bm=' + encodeURIComponent(bm || '')
+        + '&l=' + encodeURIComponent(navigator.language||'')
+        + '&r=' + Math.random();
+    }catch(e){}
+  };
+  var uad = navigator.userAgentData;
+  if (uad && uad.getHighEntropyValues) {
+    var done = false, to = setTimeout(function(){ if(!done){ done = true; send(''); } }, 900);
+    uad.getHighEntropyValues(['model','platformVersion']).then(function(v){
+      if (done) return; done = true; clearTimeout(to);
+      var brs = (uad.brands||[]).filter(function(b){ return !/Not.?A.?Brand/i.test(b.brand); });
+      var br = brs.length ? brs[brs.length-1].brand : '';
+      send(v && v.model ? (br ? br + ' ' : '') + v.model : '');
+    }).catch(function(){ if(!done){ done = true; clearTimeout(to); send(''); } });
+  } else {
+    send('');
+  }
+})();
 })();
 </script>
 <script async src="https://busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
