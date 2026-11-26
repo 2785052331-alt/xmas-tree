@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#03040a">
+<meta name="format-detection" content="telephone=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Merry Christmas · 3D 粒子圣诞树</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#03040a;overscroll-behavior:none}
+  body{font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif}
+  #cv{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  .ui{position:fixed;left:0;right:0;pointer-events:none;text-align:center;user-select:none;z-index:5}
+  #title{top:calc(3.6vh + env(safe-area-inset-top));opacity:0;transition:opacity 1.6s ease}
+  #title.on{opacity:1}
+  #title h1{
+    margin:0;font-size:clamp(22px,6.4vw,54px);font-weight:700;letter-spacing:.14em;color:#fff3e0;
+    text-shadow:0 0 12px rgba(255,196,120,.9),0 0 38px rgba(255,150,70,.55),0 0 90px rgba(255,90,40,.3);
+  }
+  #title p{margin:7px 0 0;font-size:clamp(8px,2.3vw,13px);letter-spacing:.42em;color:#93acd1;text-shadow:0 0 10px rgba(120,180,255,.5)}
+  #foot{bottom:calc(2.6vh + env(safe-area-inset-bottom))}
+  #foot .line{font-size:clamp(10px,3.1vw,14px);color:#8fa4c6;letter-spacing:.1em}
+  #foot .hint{margin-top:6px;font-size:clamp(8px,2.5vw,11px);color:#55647e;letter-spacing:.08em}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="ui" id="title">
+  <h1>Merry Christmas</h1>
+  <p>SANTA IS COMING</p>
+</div>
+<div class="ui" id="foot">
+  <div class="line">🎄 圣诞快乐 · 愿你被温柔以待 🎄</div>
+  <div class="hint">拖动旋转 · 双指缩放 · 点一下换配色</div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+var canvas = document.getElementById('cv');
+var opts = { alpha:false, antialias:false, premultipliedAlpha:true, depth:false, powerPreference:'high-performance' };
+var gl = canvas.getContext('webgl', opts) || canvas.getContext('experimental-webgl', opts);
+if(!gl){
+  document.body.innerHTML = '<div style="color:#dbe6f7;padding:40px;font-size:16px;line-height:1.8">这个浏览器没开 WebGL，换个浏览器再试试～</div>';
+  return;
+}
+var isMobile = Math.min(screen.width, screen.height) < 820 ||
+               /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+/* 调试：?t=12.5 冻结时间，?scene=text 直接看文字形态 */
+var QS = {};
+location.search.replace(/[?&]([^=&]+)=?([^&]*)/g, function(m,k,v){ QS[k] = decodeURIComponent(v||''); });
+var FIXED_T = (QS.t !== undefined && QS.t !== '') ? parseFloat(QS.t) : null;
+var FORCE_TEXT = QS.scene === 'text';
+
+/* ==================== 矩阵 ==================== */
+function perspective(out, fovy, aspect, near, far){
+  var f = 1/Math.tan(fovy/2), nf = 1/(near-far);
+  out[0]=f/aspect;out[1]=0;out[2]=0;out[3]=0;
+  out[4]=0;out[5]=f;out[6]=0;out[7]=0;
+  out[8]=0;out[9]=0;out[10]=(far+near)*nf;out[11]=-1;
+  out[12]=0;out[13]=0;out[14]=2*far*near*nf;out[15]=0;
+}
+function lookAt(out, ex,ey,ez, cx,cy,cz){
+  var zx=ex-cx, zy=ey-cy, zz=ez-cz;
+  var l=Math.sqrt(zx*zx+zy*zy+zz*zz)||1; zx/=l; zy/=l; zz/=l;
+  var xx=zz, xy=0, xz=-zx;
+  l=Math.sqrt(xx*xx+xz*xz)||1e-6; xx/=l; xz/=l;
+  var yx=zy*xz-zz*xy, yy=zz*xx-zx*xz, yz=zx*xy-zy*xx;
+  out[0]=xx;out[1]=yx;out[2]=zx;out[3]=0;
+  out[4]=xy;out[5]=yy;out[6]=zy;out[7]=0;
+  out[8]=xz;out[9]=yz;out[10]=zz;out[11]=0;
+  out[12]=-(xx*ex+xy*ey+xz*ez);
+  out[13]=-(yx*ex+yy*ey+yz*ez);
+  out[14]=-(zx*ex+zy*ey+zz*ez);
+  out[15]=1;
+}
+function modelMat(out, rotY, tiltX, ty){
+  var cy=Math.cos(rotY), sy=Math.sin(rotY), cx=Math.cos(tiltX), sx=Math.sin(tiltX);
+  out[0]=cy;    out[1]=0;   out[2]=sy;     out[3]=0;
+  out[4]=sx*sy; out[5]=cx;  out[6]=-sx*cy; out[7]=0;
+  out[8]=-cx*sy;out[9]=sx;  out[10]=cx*cy; out[11]=0;
+  out[12]=0;    out[13]=ty; out[14]=0;     out[15]=1;
+}
+
+/* ==================== 着色器 ==================== */
+function compile(t, src){
+  var s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function prog(vs, fs){
+  var p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+var VS_PART = [
+'attribute vec3 aPos;',
+'attribute vec3 aPosT;',
+'attribute vec3 aColor;',
+'attribute float aSize;',
+'attribute float aPhase;',
+'attribute float aTwk;',
+'uniform mat4 uProj,uView,uModel;',
+'uniform float uTime,uScale,uMorph,uPulse,uDepthFade;',
+'varying vec3 vColor;',
+'varying float vA;',
+'void main(){',
+'  vec3 p = mix(aPos, aPosT, uMorph);',
+'  p.xz *= 1.0 - 0.5 * uPulse;',
+'  p.y += uPulse * 1.1 * sin(aPhase * 3.0 + uTime * 6.0);',
+'  float tw = mix(1.0, 0.35 + 0.85 * (0.5 + 0.5 * sin(uTime * 2.4 + aPhase)), aTwk);',
+'  vColor = aColor;',
+'  vec4 mv = uView * uModel * vec4(p, 1.0);',
+'  float d = max(-mv.z, 0.5);',
+'  vA = tw * clamp(1.0 - (d - uDepthFade) * 0.012, 0.22, 1.0);',
+'  gl_PointSize = aSize * uScale / d * tw;',
+'  gl_Position = uProj * mv;',
+'}'
+].join('\n');
+
+var VS_SNOW = [
+'attribute vec3 aPos;',
+'attribute vec3 aColor;',
+'attribute float aSize;',
+'attribute float aPhase;',
+'attribute float aSpeed;',
+'attribute float aSwing;',
+'uniform mat4 uProj,uView;',
+'uniform float uTime,uScale;',
+'varying vec3 vColor;',
+'varying float vA;',
+'void main(){',
+'  vec3 p = aPos;',
+'  p.y = mod(p.y - uTime * aSpeed, 52.0) - 24.0;',
+'  p.x += sin(uTime * 0.65 + aSwing) * 0.75;',
+'  p.z += cos(uTime * 0.5 + aSwing) * 0.6;',
+'  vColor = aColor;',
+'  vA = 0.45 + 0.55 * (0.5 + 0.5 * sin(uTime * 1.6 + aPhase));',
+'  vec4 mv = uView * vec4(p, 1.0);',
+'  gl_PointSize = aSize * uScale / max(-mv.z, 0.5);',
+'  gl_Position = uProj * mv;',
+'}'
+].join('\n');
+
+var VS_SPARK = [
+'attribute vec3 aPos;',
+'attribute vec3 aColor;',
+'attribute float aSize;',
+'attribute float aLife;',
+'uniform mat4 uProj,uView;',
+'uniform float uScale;',
+'varying vec3 vColor;',
+'varying float vA;',
+'void main(){',
+'  vColor = aColor;',
+'  vA = clamp(aLife, 0.0, 1.0);',
+'  vec4 mv = uView * vec4(aPos, 1.0);',
+'  gl_PointSize = aSize * uScale / max(-mv.z, 0.5) * (0.45 + 0.55 * vA);',
+'  gl_Position = uProj * mv;',
+'}'
+].join('\n');
+
+var FS_ROUND = [
+'precision mediump float;',
+'uniform sampler2D uMap;',
+'varying vec3 vColor;',
+'varying float vA;',
+'void main(){',
+'  vec4 t = texture2D(uMap, gl_PointCoord);',
+'  if(t.a < 0.02) discard;',
+'  gl_FragColor = vec4(vColor * vA, t.a * vA);',
+'}'
+].join('\n');
+
+var VS_QUAD = [
+'attribute vec2 aUV;',
+'uniform mat4 uProj,uView;',
+'uniform vec3 uCenter;',
+'uniform vec2 uSize;',
+'uniform float uRot,uAlpha;',
+'uniform vec3 uTint;',
+'varying vec2 vUV;',
+'varying float vA;',
+'varying vec3 vT;',
+'void main(){',
+'  vec2 p = aUV * uSize;',
+'  float c = cos(uRot), s = sin(uRot);',
+'  p = vec2(p.x * c - p.y * s, p.x * s + p.y * c);',
+'  vec4 mv = uView * vec4(uCenter, 1.0);',
+'  mv.xy += p;',
+'  vUV = aUV * 0.5 + 0.5;',
+'  vA = uAlpha;',
+'  vT = uTint;',
+'  gl_Position = uProj * mv;',
+'}'
+].join('\n');
+
+var FS_QUAD = [
+'precision mediump float;',
+'uniform sampler2D uMap;',
+'varying vec2 vUV;',
+'varying float vA;',
+'varying vec3 vT;',
+'void main(){',
+'  vec4 t = texture2D(uMap, vUV);',
+'  gl_FragColor = vec4(t.rgb * vT * vA, t.a * vA);',
+'}'
+].join('\n');
+
+var VS_FS = 'attribute vec2 aUV;varying vec2 vUV;void main(){vUV=aUV*0.5+0.5;gl_Position=vec4(aUV,0.0,1.0);}';
+
+var FS_BRIGHT = [
+'precision mediump float;',
+'uniform sampler2D uTex;',
+'uniform vec2 uTexel;',
+'uniform float uThreshold;',
+'varying vec2 vUV;',
+'void main(){',
+'  vec3 c = vec3(0.0);',
+'  c += texture2D(uTex, vUV + uTexel * vec2(-1.0,-1.0)).rgb;',
+'  c += texture2D(uTex, vUV + uTexel * vec2( 1.0,-1.0)).rgb;',
+'  c += texture2D(uTex, vUV + uTexel * vec2(-1.0, 1.0)).rgb;',
+'  c += texture2D(uTex, vUV + uTexel * vec2( 1.0, 1.0)).rgb;',
+'  c *= 0.25;',
+'  float l = max(max(c.r, c.g), c.b);',
+'  float k = max(l - uThreshold, 0.0) / max(l, 0.0001);',
+'  gl_FragColor = vec4(c * k, 1.0);',
+'}'
+].join('\n');
+
+var FS_BLUR = [
+'precision mediump float;',
+'uniform sampler2D uTex;',
+'uniform vec2 uDir;',
+'varying vec2 vUV;',
+'void main(){',
+'  vec3 s = texture2D(uTex, vUV).rgb * 0.227027;',
+'  s += texture2D(uTex, vUV + uDir * 1.3846).rgb * 0.316216;',
+'  s += texture2D(uTex, vUV - uDir * 1.3846).rgb * 0.316216;',
+'  s += texture2D(uTex, vUV + uDir * 3.2308).rgb * 0.070270;',
+'  s += texture2D(uTex, vUV - uDir * 3.2308).rgb * 0.070270;',
+'  gl_FragColor = vec4(s, 1.0);',
+'}'
+].join('\n');
+
+var FS_COMPOSITE = [
+'precision mediump float;',
+'uniform sampler2D uScene,uBloom1,uBloom2;',
+'uniform vec2 uRes;',
+'uniform float uTime,uBloomAmt,uBgAmt;',
+'varying vec2 vUV;',
+'void main(){',
+'  vec2 uv = vUV;',
+'  vec3 scene = texture2D(uScene, uv).rgb;',
+'  vec3 b1 = texture2D(uBloom1, uv).rgb;',
+'  vec3 b2 = texture2D(uBloom2, uv).rgb;',
+'  vec2 q = uv - vec2(0.5, 0.46);',
+'  q.x *= uRes.x / uRes.y;',
+'  float r = length(q);',
+'  vec3 bg = mix(vec3(0.035, 0.048, 0.085), vec3(0.004, 0.005, 0.014), smoothstep(0.05, 0.75, r));',
+'  bg += vec3(0.10, 0.055, 0.020) * smoothstep(0.95, 0.15, r);',
+'  bg += vec3(0.015, 0.030, 0.060) * (1.0 - smoothstep(0.0, 0.55, r)) * 0.6;',
+'  vec3 col = bg * uBgAmt + scene + (b1 * 0.9 + b2 * 1.15) * uBloomAmt;',
+'  col = vec3(1.0) - exp(-col * 1.25);',
+'  float vig = smoothstep(1.15, 0.28, length((uv - vec2(0.5)) * vec2(1.0, 1.12)) * 1.35);',
+'  col *= mix(0.72, 1.0, vig);',
+'  float g = fract(sin(dot(uv * uRes + uTime, vec2(12.9898, 78.233))) * 43758.5453);',
+'  col += (g - 0.5) * 0.014;',
+'  gl_FragColor = vec4(col, 1.0);',
+'}'
+].join('\n');
+
+
+var P_PART  = prog(VS_PART,  FS_ROUND);
+var P_SNOW  = prog(VS_SNOW,  FS_ROUND);
+var P_SPARK = prog(VS_SPARK, FS_ROUND);
+var P_QUAD  = prog(VS_QUAD,  FS_QUAD);
+var P_BRIGHT = prog(VS_FS, FS_BRIGHT);
+var P_BLUR   = prog(VS_FS, FS_BLUR);
+var P_COMP   = prog(VS_FS, FS_COMPOSITE);
+
+function uni(p, names){
+  var o = {};
+  for(var i=0;i<names.length;i++) o[names[i]] = gl.getUniformLocation(p, names[i]);
+  return o;
+}
+function att(p, names){
+  var o = {};
+  for(var i=0;i<names.length;i++) o[names[i]] = gl.getAttribLocation(p, names[i]);
+  return o;
+}
+var U_PART = uni(P_PART, ['uProj','uView','uModel','uTime','uScale','uMorph','uPulse','uDepthFade','uMap']);
+var A_PART = att(P_PART, ['aPos','aPosT','aColor','aSize','aPhase','aTwk']);
+var U_SNOW = uni(P_SNOW, ['uProj','uView','uTime','uScale','uMap']);
+var A_SNOW = att(P_SNOW, ['aPos','aColor','aSize','aPhase','aSpeed','aSwing']);
+var U_SPARK = uni(P_SPARK, ['uProj','uView','uScale','uMap']);
+var A_SPARK = att(P_SPARK, ['aPos','aColor','aSize','aLife']);
+var U_QUAD = uni(P_QUAD, ['uProj','uView','uCenter','uSize','uRot','uAlpha','uTint','uMap']);
+var A_QUAD = att(P_QUAD, ['aUV']);
+var U_BRIGHT = uni(P_BRIGHT, ['uTex','uTexel','uThreshold']);
+var U_BLUR = uni(P_BLUR, ['uTex','uDir']);
+var U_COMP = uni(P_COMP, ['uScene','uBloom1','uBloom2','uRes','uTime','uBloomAmt','uBgAmt']);
+
+/* ==================== 贴图 ==================== */
+function texFromCanvas(cv){
+  var t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function cvs(w,h){ var c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
+
+var glowTex = (function(){
+  var s=96, c=cvs(s,s), g=c.getContext('2d');
+  var grd=g.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
+  grd.addColorStop(0,'rgba(255,255,255,1)');
+  grd.addColorStop(0.22,'rgba(255,255,255,0.92)');
+  grd.addColorStop(0.5,'rgba(255,255,255,0.26)');
+  grd.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle=grd; g.fillRect(0,0,s,s);
+  return texFromCanvas(c);
+})();
+
+var starTex = (function(){
+  var s=256, c=cvs(s,s), g=c.getContext('2d'), cx=s/2, cy=s/2;
+  var grd=g.createRadialGradient(cx,cy,0,cx,cy,s/2);
+  grd.addColorStop(0,'rgba(255,255,240,1)');
+  grd.addColorStop(0.14,'rgba(255,232,170,.85)');
+  grd.addColorStop(0.40,'rgba(255,180,80,.22)');
+  grd.addColorStop(1,'rgba(255,120,0,0)');
+  g.fillStyle=grd; g.fillRect(0,0,s,s);
+  g.globalCompositeOperation='lighter';
+  function ray(len,wid,alpha,rot){
+    g.save(); g.translate(cx,cy); g.rotate(rot);
+    var lg=g.createLinearGradient(0,0,len,0);
+    lg.addColorStop(0,'rgba(255,252,230,'+alpha+')');
+    lg.addColorStop(0.5,'rgba(255,220,150,'+(alpha*0.4)+')');
+    lg.addColorStop(1,'rgba(255,190,110,0)');
+    g.fillStyle=lg;
+    g.beginPath(); g.moveTo(0,-wid); g.lineTo(len,0); g.lineTo(0,wid); g.closePath(); g.fill();
+    g.restore();
+  }
+  ray(s*.50,s*.028,.95,0); ray(s*.50,s*.028,.95,Math.PI);
+  ray(s*.50,s*.028,.95,Math.PI/2); ray(s*.50,s*.028,.95,-Math.PI/2);
+  ray(s*.28,s*.016,.6,Math.PI/4); ray(s*.28,s*.016,.6,-Math.PI/4);
+  ray(s*.28,s*.016,.6,Math.PI*.75); ray(s*.28,s*.016,.6,-Math.PI*.75);
+  return texFromCanvas(c);
+})();
+
+/* 流星拖尾：右端亮头，向左拖出渐变尾 */
+var streakTex = (function(){
+  var w=256,h=64, c=cvs(w,h), g=c.getContext('2d');
+  var grd=g.createLinearGradient(0,0,w,0);
+  grd.addColorStop(0,'rgba(120,190,255,0)');
+  grd.addColorStop(0.55,'rgba(170,215,255,0.35)');
+  grd.addColorStop(0.88,'rgba(255,255,255,0.95)');
+  grd.addColorStop(1,'rgba(255,255,255,1)');
+  g.fillStyle=grd;
+  g.beginPath(); g.moveTo(w, 0); g.lineTo(w, h); g.lineTo(0, h/2); g.closePath(); g.fill();
+  var rg=g.createRadialGradient(w-14,h/2,0,w-14,h/2,26);
+  rg.addColorStop(0,'rgba(255,255,255,1)');
+  rg.addColorStop(1,'rgba(180,220,255,0)');
+  g.globalCompositeOperation='lighter';
+  g.fillStyle=rg; g.fillRect(0,0,w,h);
+  return texFromCanvas(c);
+})();
+
+/* ==================== 配色方案 ==================== */
+var PALETTES = [
+  { name:'暖金', green:[[0.05,0.30,0.16],[0.08,0.42,0.22],[0.14,0.55,0.28],[0.45,0.40,0.16]],
+    light:[[1,0.84,0.42],[1,0.69,0.25],[1,0.48,0.27],[1,0.31,0.42],[1,0.95,0.77],[1,0.76,0.65],[1,0.91,0.66]] },
+  { name:'冰蓝', green:[[0.05,0.20,0.32],[0.07,0.30,0.45],[0.12,0.42,0.60],[0.30,0.45,0.62]],
+    light:[[0.35,0.72,1],[0.18,0.53,1],[0.11,0.37,0.85],[0.56,0.83,1],[0.70,0.89,1],[0.85,0.95,1],[0.45,0.62,0.95]] },
+  { name:'深绿', green:[[0.03,0.24,0.13],[0.05,0.34,0.18],[0.09,0.46,0.24],[0.22,0.52,0.30]],
+    light:[[0.30,0.85,0.45],[0.60,0.95,0.55],[1,0.90,0.45],[0.95,0.98,0.80],[0.45,0.90,0.85],[0.15,0.70,0.40],[0.85,1,0.70]] },
+  { name:'樱粉', green:[[0.16,0.18,0.28],[0.24,0.22,0.35],[0.32,0.26,0.42],[0.42,0.30,0.48]],
+    light:[[1,0.62,0.80],[1,0.76,0.88],[0.95,0.45,0.70],[1,0.90,0.95],[0.80,0.60,1],[1,0.98,0.99],[1,0.55,0.65]] }
+];
+var palIdx = 0;
+
+/* ==================== 树数据 ==================== */
+var TREE_H = 17, TREE_R = 4.8, TREE_Y = -8.5;
+var GA = Math.PI * (3 - Math.sqrt(5));
+var treeCount = 6400, garlandN = 1000, ringN = 1300;
+var totalP = treeCount + garlandN + ringN;
+
+var aPos  = new Float32Array(totalP*3);
+var aPosT = new Float32Array(totalP*3);
+var aCol  = new Float32Array(totalP*3);
+var aSize = new Float32Array(totalP);
+var aPhs  = new Float32Array(totalP);
+var aTwk  = new Float32Array(totalP);
+var palSlot = new Uint8Array(totalP);   /* 0=绿系 -> 索引, 1=彩色灯 */
+var greenIdx = new Uint8Array(totalP);
+var lightIdx = new Uint8Array(totalP);
+var bright0 = new Float32Array(totalP);
+
+(function buildTree(){
+  var i, o;
+  for(i=0;i<treeCount;i++){
+    var t = Math.pow(i/(treeCount-1), 0.92);
+    var r = TREE_R*(1-t)*(0.90+Math.random()*0.18) + (Math.random()-0.5)*0.18;
+    var a = i*GA + (Math.random()-0.5)*0.16;
+    o = i*3;
+    aPos[o]   = Math.cos(a)*r;
+    aPos[o+1] = t*TREE_H + (Math.random()-0.5)*0.22;
+    aPos[o+2] = Math.sin(a)*r;
+    var isLight = Math.random() < 0.17;
+    palSlot[i] = isLight ? 1 : 0;
+    greenIdx[i] = (Math.random()*4)|0;
+    lightIdx[i] = (Math.random()*7)|0;
+    aSize[i] = isLight ? (0.6+Math.random()*0.95) : (0.28+Math.random()*0.34);
+    aPhs[i]  = Math.random()*6.283;
+    aTwk[i]  = isLight ? 1.0 : 0.16;
+    bright0[i] = 0.5 + 0.5*(0.3+0.7*t);
+  }
+  for(i=0;i<garlandN;i++){
+    var tt = i/(garlandN-1);
+    var ang = tt*Math.PI*2*6.5;
+    var rr = TREE_R*(1-tt)*1.03 + 0.06;
+    o = (treeCount+i)*3;
+    aPos[o] = Math.cos(ang)*rr; aPos[o+1] = tt*TREE_H*0.985; aPos[o+2] = Math.sin(ang)*rr;
+    palSlot[treeCount+i] = 1;
+    lightIdx[treeCount+i] = i % 7;
+    aSize[treeCount+i] = 0.5 + Math.random()*0.3;
+    aPhs[treeCount+i] = i*0.32;
+    aTwk[treeCount+i] = 0.9;
+    bright0[treeCount+i] = 1.0;
+  }
+  for(i=0;i<ringN;i++){
+    var ra = Math.random()*Math.PI*2;
+    var rad = TREE_R*(0.92+Math.random()*0.75);
+    o = (treeCount+garlandN+i)*3;
+    aPos[o] = Math.cos(ra)*rad;
+    aPos[o+1] = -0.05 + Math.random()*0.5;
+    aPos[o+2] = Math.sin(ra)*rad;
+    palSlot[treeCount+garlandN+i] = 1;
+    lightIdx[treeCount+garlandN+i] = (Math.random()*7)|0;
+    aSize[treeCount+garlandN+i] = 0.3 + Math.random()*0.55;
+    aPhs[treeCount+garlandN+i] = Math.random()*6.283;
+    aTwk[treeCount+garlandN+i] = 1.0;
+    bright0[treeCount+garlandN+i] = 0.30 + Math.random()*0.30;
+  }
+})();
+
+/* --- 文字目标点（粒子汇聚成字） --- */
+var textPoints = (function(){
+  var S = 1100, Hh = 220;
+  var c = cvs(S, Hh), g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'bold 132px "Segoe UI", Arial, "PingFang SC", "Microsoft YaHei", sans-serif';
+  g.fillText('MERRY', S/2, Hh*0.32);
+  g.font = 'bold 96px "Segoe UI", Arial, "PingFang SC", "Microsoft YaHei", sans-serif';
+  g.fillText('CHRISTMAS', S/2, Hh*0.76);
+  var d = g.getImageData(0, 0, S, Hh).data;
+  var pts = [];
+  var minX = S, maxX = 0, minY = Hh, maxY = 0;
+  for(var y=0; y<Hh; y+=2){
+    for(var x=0; x<S; x+=2){
+      if(d[(y*S+x)*4+3] > 120){
+        pts.push([x, y]);
+        if(x<minX) minX=x; if(x>maxX) maxX=x;
+        if(y<minY) minY=y; if(y>maxY) maxY=y;
+      }
+    }
+  }
+  /* 裁到字的实际墨迹范围，居中 */
+  for(var k=0;k<pts.length;k++){ pts[k][0] -= (minX+maxX)/2; pts[k][1] -= (minY+maxY)/2; }
+  return { pts: pts, w: (maxX-minX)||S, h: (maxY-minY)||Hh };
+})();
+
+function layoutText(viewW){
+  var fitW = Math.min(viewW*0.84, 26);
+  var scale = fitW / textPoints.w;
+  var tw = textPoints.w * scale, th = textPoints.h * scale;
+  var cy = TREE_H * 0.5;   /* 局部坐标中心（世界 y≈0） */
+  var n = textPoints.pts.length;
+  for(var i=0;i<totalP;i++){
+    var p = textPoints.pts[i % n];
+    var jx = (Math.random()-0.5)*0.10, jy = (Math.random()-0.5)*0.10;
+    aPosT[i*3]   = p[0] * scale + jx;
+    aPosT[i*3+1] = cy - p[1] * scale + jy;
+    aPosT[i*3+2] = (Math.random()-0.5)*0.6;
+  }
+  return { w: tw, h: th };
+}
+
+
+/* --- 上色（切换配色时重建颜色数组） --- */
+function applyPalette(idx){
+  palIdx = idx;
+  var p = PALETTES[idx];
+  for(var i=0;i<totalP;i++){
+    var c = palSlot[i] ? p.light[lightIdx[i] % p.light.length] : p.green[greenIdx[i] % p.green.length];
+    var b = bright0[i];
+    aCol[i*3]   = c[0]*b;
+    aCol[i*3+1] = c[1]*b;
+    aCol[i*3+2] = c[2]*b;
+  }
+  if(colBuf) uploadAttr(colBuf, aCol);
+}
+
+function mkBuf(data, usage){
+  var b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, data, usage || gl.STATIC_DRAW);
+  return b;
+}
+function uploadAttr(buf, data){
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+}
+
+var colBuf = null;
+var B = {
+  pos:  mkBuf(aPos),
+  posT: mkBuf(aPosT),
+  col:  mkBuf(aCol),
+  size: mkBuf(aSize),
+  phs:  mkBuf(aPhs),
+  twk:  mkBuf(aTwk)
+};
+colBuf = B.col;
+
+/* --- 雪 --- */
+var SNOW_N = isMobile ? 1600 : 2400;
+var sPos = new Float32Array(SNOW_N*3), sCol = new Float32Array(SNOW_N*3),
+    sSize = new Float32Array(SNOW_N),  sPhs = new Float32Array(SNOW_N),
+    sSpd = new Float32Array(SNOW_N),   sSwg = new Float32Array(SNOW_N);
+for(var si=0; si<SNOW_N; si++){
+  sPos[si*3]   = (Math.random()-0.5)*38;
+  sPos[si*3+1] = Math.random()*52;
+  sPos[si*3+2] = (Math.random()-0.5)*38;
+  var w = 0.55 + Math.random()*0.45;
+  sCol[si*3] = w*0.90; sCol[si*3+1] = w*0.95; sCol[si*3+2] = 1.0;
+  sSize[si] = 0.14 + Math.random()*0.38;
+  sPhs[si] = Math.random()*6.283;
+  sSpd[si] = 0.8 + Math.random()*2.6;
+  sSwg[si] = Math.random()*6.283;
+}
+var SB = {
+  pos: mkBuf(sPos), col: mkBuf(sCol), size: mkBuf(sSize),
+  phs: mkBuf(sPhs), spd: mkBuf(sSpd), swg: mkBuf(sSwg)
+};
+
+/* --- 烟花 / 流星 --- */
+var MAX_SPARK = 1400;
+var sparkPos = new Float32Array(MAX_SPARK*3);
+var sparkCol = new Float32Array(MAX_SPARK*3);
+var sparkSize = new Float32Array(MAX_SPARK);
+var sparkLife = new Float32Array(MAX_SPARK);
+var SPB = {
+  pos: mkBuf(sparkPos, gl.DYNAMIC_DRAW),
+  col: mkBuf(sparkCol, gl.DYNAMIC_DRAW),
+  size: mkBuf(sparkSize, gl.DYNAMIC_DRAW),
+  life: mkBuf(sparkLife, gl.DYNAMIC_DRAW)
+};
+var sparks = [];
+
+function spawnFirework(x, y, z, tint){
+  var n = isMobile ? 90 : 140;
+  var base = tint || [1.0, 0.85, 0.55];
+  for(var i=0;i<n;i++){
+    var th = Math.random()*Math.PI*2;
+    var ph = Math.acos(2*Math.random()-1);
+    var sp = 5.5 + Math.random()*7.5;
+    sparks.push({
+      x:x, y:y, z:z,
+      vx: Math.sin(ph)*Math.cos(th)*sp,
+      vy: Math.cos(ph)*sp*0.85 + 1.2,
+      vz: Math.sin(ph)*Math.sin(th)*sp*0.7,
+      ttl: 1.1 + Math.random()*1.1, life: 1,
+      r: Math.min(1, base[0]*(0.75+Math.random()*0.5)),
+      g: Math.min(1, base[1]*(0.75+Math.random()*0.5)),
+      b: Math.min(1, base[2]*(0.75+Math.random()*0.5)),
+      size: 0.35 + Math.random()*0.55
+    });
+  }
+  if(sparks.length > MAX_SPARK*0.9) sparks.splice(0, sparks.length - MAX_SPARK);
+}
+
+var meteors = [];
+function spawnMeteor(){
+  var fromLeft = Math.random() < 0.5;
+  var sx = fromLeft ? -22 : 22;
+  var sy = 10 + Math.random()*10;
+  var sz = -6 + Math.random()*14;
+  var sp = 15 + Math.random()*10;
+  var dy = -(3 + Math.random()*5);
+  meteors.push({
+    x:sx, y:sy, z:sz,
+    vx:(fromLeft?1:-1)*sp*0.92, vy:dy, vz:(Math.random()-0.5)*2,
+    life:1, ttl:1.6 + Math.random()*0.9,
+    len: 7 + Math.random()*5
+  });
+}
+
+/* ==================== 渲染目标 ==================== */
+var sceneRT=null, bloomA=null, bloomB=null, bloomQ=null, qA=null, qB=null;
+function makeRT(w, h){
+  var tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  var fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  var st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if(QS.debug) console.log('[RT]', w+'x'+h, 'status', st, 'complete?', st === gl.FRAMEBUFFER_COMPLETE, 'glErr', gl.getError());
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { tex:tex, fbo:fbo, w:w, h:h };
+}
+function destroyRT(rt){
+  if(!rt) return;
+  gl.deleteTexture(rt.tex);
+  gl.deleteFramebuffer(rt.fbo);
+}
+
+/* ==================== 相机 / 交互 ==================== */
+var projM = new Float32Array(16), viewM = new Float32Array(16), modelM = new Float32Array(16);
+var FOV = 46*Math.PI/180;
+var BASE_DIST = 0, dist = 0, targetDist = 0;
+var rotY = 0, rotVel = 0.004, tilt = 0, targetTilt = 0;
+var dragging = false, lastX = 0, lastY = 0, moved = 0;
+var pulse = 0;
+var CW = 1, CH = 1, DPR = 1, renderScale = 1;
+
+function onDown(x,y){ dragging = true; lastX = x; lastY = y; moved = 0; }
+function onMove(x,y){
+  if(!dragging) return;
+  var dx = x-lastX, dy = y-lastY;
+  lastX = x; lastY = y;
+  moved += Math.abs(dx) + Math.abs(dy);
+  rotY += dx*0.006;
+  rotVel = Math.max(-0.05, Math.min(0.05, dx*0.0006));
+  targetTilt = Math.max(-0.45, Math.min(0.45, targetTilt + dy*0.0022));
+}
+function onUp(){
+  if(dragging && moved < 8){
+    /* 轻点：换配色 + 粒子脉冲 */
+    applyPalette((palIdx+1) % PALETTES.length);
+    pulse = 1;
+  }
+  dragging = false;
+}
+canvas.addEventListener('pointerdown', function(e){ onDown(e.clientX, e.clientY); });
+window.addEventListener('pointermove', function(e){ onMove(e.clientX, e.clientY); });
+window.addEventListener('pointerup', onUp);
+window.addEventListener('pointercancel', function(){ dragging = false; });
+canvas.addEventListener('wheel', function(e){
+  e.preventDefault();
+  targetDist = Math.max(14, Math.min(60, targetDist + e.deltaY*0.035));
+}, {passive:false});
+var pinchStart = 0;
+canvas.addEventListener('touchstart', function(e){
+  if(e.touches.length === 2){
+    pinchStart = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+  }
+}, {passive:true});
+canvas.addEventListener('touchmove', function(e){
+  if(e.touches.length === 2 && pinchStart){
+    var d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    if(d > 0){
+      targetDist = Math.max(14, Math.min(60, targetDist*(pinchStart/d)));
+      pinchStart = d;
+    }
+    e.preventDefault();
+  }
+}, {passive:false});
+
+/* ==================== 尺寸 ==================== */
+var textLayout = null;
+function resize(){
+  var w = innerWidth, h = innerHeight;
+  var rawDpr = window.devicePixelRatio || 1;
+  var MAX_PX = isMobile ? 1500000 : 3200000;
+  var budget = Math.sqrt(MAX_PX / Math.max(w * h, 1));
+  DPR = Math.max(1, Math.min(rawDpr, isMobile ? 1.75 : 2, budget));
+  renderScale = DPR;
+  canvas.style.width = w+'px';
+  canvas.style.height = h+'px';
+  canvas.width = Math.round(w*renderScale);
+  canvas.height = Math.round(h*renderScale);
+  CW = canvas.width; CH = canvas.height;
+
+  perspective(projM, FOV, w/h, 0.1, 400);
+
+  if(!dist){
+    BASE_DIST = (w/h < 0.78) ? 30 : 28;
+    dist = BASE_DIST; targetDist = BASE_DIST;
+  }
+  var viewW = 2*dist*Math.tan(FOV/2)*(w/h);
+  textLayout = layoutText(viewW);
+  uploadAttr(B.posT, aPosT);
+
+  var bw = Math.max(64, Math.round(CW/2)), bh = Math.max(64, Math.round(CH/2));
+  var qw = Math.max(32, Math.round(CW/4)), qh = Math.max(32, Math.round(CH/4));
+  destroyRT(sceneRT); destroyRT(bloomA); destroyRT(bloomB); destroyRT(bloomQ); destroyRT(qA); destroyRT(qB);
+  sceneRT = makeRT(CW, CH);
+  bloomA = makeRT(bw, bh); bloomB = makeRT(bw, bh);
+  bloomQ = makeRT(qw, qh); qA = makeRT(qw, qh); qB = makeRT(qw, qh);
+}
+resize();
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', function(){ setTimeout(resize, 260); });
+
+
+/* ==================== 全屏四边形 ==================== */
+var fsQuad = mkBuf(new Float32Array([-1,-1, 1,-1, -1,1, 1,1]));
+var billQuad = mkBuf(new Float32Array([-1,-1, 1,-1, -1,1, 1,1]));
+var A_FS_BRIGHT = att(P_BRIGHT,['aUV']).aUV;
+var A_FS_BLUR   = att(P_BLUR,['aUV']).aUV;
+var A_FS_COMP   = att(P_COMP,['aUV']).aUV;
+
+function bindFSQuad(loc){
+  gl.bindBuffer(gl.ARRAY_BUFFER, fsQuad);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+}
+function bindBillQuad(){
+  gl.bindBuffer(gl.ARRAY_BUFFER, billQuad);
+  gl.enableVertexAttribArray(A_QUAD.aUV);
+  gl.vertexAttribPointer(A_QUAD.aUV, 2, gl.FLOAT, false, 0, 0);
+}
+function drawBill(tex, cx,cy,cz, sx,sy, rot, alpha, r,g,b){
+  gl.useProgram(P_QUAD);
+  bindBillQuad();
+  gl.uniformMatrix4fv(U_QUAD.uProj, false, projM);
+  gl.uniformMatrix4fv(U_QUAD.uView, false, viewM);
+  gl.uniform3f(U_QUAD.uCenter, cx, cy, cz);
+  gl.uniform2f(U_QUAD.uSize, sx, sy);
+  gl.uniform1f(U_QUAD.uRot, rot||0);
+  gl.uniform1f(U_QUAD.uAlpha, alpha);
+  gl.uniform3f(U_QUAD.uTint, r, g, b);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform1i(U_QUAD.uMap, 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+/* ==================== 后处理通道 ==================== */
+function passBright(src, dst){
+  gl.disable(gl.BLEND);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+  gl.viewport(0, 0, dst.w, dst.h);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(P_BRIGHT);
+  bindFSQuad(A_FS_BRIGHT);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(U_BRIGHT.uTex, 0);
+  gl.uniform2f(U_BRIGHT.uTexel, 1/src.w, 1/src.h);
+  gl.uniform1f(U_BRIGHT.uThreshold, QS.th ? parseFloat(QS.th) : 0.20);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+function passBlur(src, dst, dx, dy){
+  gl.disable(gl.BLEND);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+  gl.viewport(0, 0, dst.w, dst.h);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(P_BLUR);
+  bindFSQuad(A_FS_BLUR);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(U_BLUR.uTex, 0);
+  gl.uniform2f(U_BLUR.uDir, dx/src.w, dy/src.h);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+/* ==================== 时间线 ==================== */
+var CYCLE = 27;
+function smooth(x){ x = Math.max(0, Math.min(1, x)); return x*x*(3-2*x); }
+function phaseAt(t){
+  /* 只保留圣诞树形态，不再做文字形变 */
+  return { m: 0, spin: 1 };
+}
+
+/* ==================== 帧循环 ==================== */
+gl.disable(gl.DEPTH_TEST);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+var t0 = performance.now();
+var lastT = 0;
+var nextFirework = 3.0, nextMeteor = 6.0;
+
+function updateSparks(dt){
+  var i, s;
+  for(i=sparks.length-1; i>=0; i--){
+    s = sparks[i];
+    s.ttl -= dt;
+    if(s.ttl <= 0){ sparks.splice(i,1); continue; }
+    s.vy -= 7.5*dt;
+    var damp = 1 - 0.85*dt;
+    s.vx *= damp; s.vz *= damp; s.vy *= (1 - 0.30*dt);
+    s.x += s.vx*dt; s.y += s.vy*dt; s.z += s.vz*dt;
+    s.life = Math.min(1, s.ttl/0.85);
+  }
+  var n = Math.min(sparks.length, MAX_SPARK);
+  for(i=0;i<n;i++){
+    s = sparks[i];
+    sparkPos[i*3] = s.x; sparkPos[i*3+1] = s.y; sparkPos[i*3+2] = s.z;
+    sparkCol[i*3] = s.r; sparkCol[i*3+1] = s.g; sparkCol[i*3+2] = s.b;
+    sparkSize[i] = s.size;
+    sparkLife[i] = s.life;
+  }
+  if(n > 0){
+    uploadAttr(SPB.pos, sparkPos.subarray(0, n*3));
+    uploadAttr(SPB.col, sparkCol.subarray(0, n*3));
+    uploadAttr(SPB.size, sparkSize.subarray(0, n));
+    uploadAttr(SPB.life, sparkLife.subarray(0, n));
+  }
+  return n;
+}
+
+function frame(now){
+  var t = FIXED_T !== null ? FIXED_T : (now - t0)/1000;
+  var dt = FIXED_T !== null ? 0.016 : Math.min(t - lastT, 0.05) || 0.016;
+  lastT = t;
+
+  var ph = phaseAt(t);
+  var morph = ph.m;
+
+  /* --- 旋转 --- */
+  if(!dragging){
+    if(ph.spin > 0){
+      rotVel += (0.004 - rotVel)*0.02;
+      rotY += rotVel*ph.spin;
+    }else{
+      /* 文字形态锁正面 */
+      var target = Math.round(rotY/(Math.PI*2))*(Math.PI*2);
+      rotY += (target - rotY)*0.05;
+    }
+  }
+  tilt += (targetTilt - tilt)*0.08;
+  dist += (targetDist - dist)*0.08;
+  pulse *= (1 - 0.06);
+
+  var camY = 6.2 + Math.sin(t*0.45)*0.55;
+  lookAt(viewM, 0, camY, dist, 0, 0.6, 0);
+  modelMat(modelM, rotY, tilt, TREE_Y);
+
+  /* --- 特效生成 --- */
+  var nofx = QS.nofx === '1';
+  if(!nofx && morph < 0.35){
+    if(t > nextFirework){
+      var pal = PALETTES[palIdx].light;
+      var c2 = pal[(Math.random()*pal.length)|0];
+      spawnFirework((Math.random()-0.5)*20, 11 + Math.random()*7, (Math.random()-0.5)*10, c2);
+      nextFirework = t + 2.2 + Math.random()*3.4;
+    }
+    if(t > nextMeteor){
+      spawnMeteor();
+      nextMeteor = t + 4.5 + Math.random()*5;
+    }
+  }
+
+  /* --- 场景 → sceneRT --- */
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneRT.fbo);
+  gl.viewport(0, 0, sceneRT.w, sceneRT.h);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  var scale = CH * 0.245;
+
+  /* 粒子树/文字 */
+  gl.useProgram(P_PART);
+  gl.bindBuffer(gl.ARRAY_BUFFER, B.pos);  gl.enableVertexAttribArray(A_PART.aPos);  gl.vertexAttribPointer(A_PART.aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, B.posT); gl.enableVertexAttribArray(A_PART.aPosT); gl.vertexAttribPointer(A_PART.aPosT, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, B.col);  gl.enableVertexAttribArray(A_PART.aColor); gl.vertexAttribPointer(A_PART.aColor, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, B.size); gl.enableVertexAttribArray(A_PART.aSize);  gl.vertexAttribPointer(A_PART.aSize, 1, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, B.phs);  gl.enableVertexAttribArray(A_PART.aPhase); gl.vertexAttribPointer(A_PART.aPhase, 1, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, B.twk);  gl.enableVertexAttribArray(A_PART.aTwk);   gl.vertexAttribPointer(A_PART.aTwk, 1, gl.FLOAT, false, 0, 0);
+  gl.uniformMatrix4fv(U_PART.uProj, false, projM);
+  gl.uniformMatrix4fv(U_PART.uView, false, viewM);
+  gl.uniformMatrix4fv(U_PART.uModel, false, modelM);
+  gl.uniform1f(U_PART.uTime, t);
+  gl.uniform1f(U_PART.uScale, scale);
+  gl.uniform1f(U_PART.uMorph, morph);
+  gl.uniform1f(U_PART.uPulse, pulse);
+  gl.uniform1f(U_PART.uDepthFade, 24);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, glowTex);
+  gl.uniform1i(U_PART.uMap, 0);
+  gl.drawArrays(gl.POINTS, 0, totalP);
+
+  /* 树顶星 + 光晕（文字形态时淡出） */
+  var solo = QS.solo === "1";
+  var starA = solo ? 0 : (1 - morph) * (0.80 + 0.20*Math.sin(t*2.1));
+  if(starA > 0.01){
+    var sc = 1.9 + 0.3*Math.sin(t*2.1);
+    drawBill(starTex, 0, TREE_H+TREE_Y+1.2, 0, sc, sc, t*0.25, starA, 1, 0.95, 0.82);
+    drawBill(glowTex, 0, TREE_H+TREE_Y+1.2, 0, 1.5+0.3*Math.sin(t*2.1), 1.5+0.3*Math.sin(t*2.1), 0, starA*0.22, 1, 0.78, 0.45);
+  }
+  if(!solo) {
+  drawBill(glowTex, 0, TREE_Y+0.2, 0, 6.6, 6.6, 0, 0.22*(1-morph*0.6), 0.85, 0.62, 0.42);
+  }
+
+  /* 流星 */
+  for(var mi=meteors.length-1; mi>=0; mi--){
+    var m = meteors[mi];
+    m.ttl -= dt;
+    if(m.ttl <= 0){ meteors.splice(mi,1); continue; }
+    m.x += m.vx*dt; m.y += m.vy*dt; m.z += m.vz*dt;
+    var a = Math.min(1, m.ttl/0.7) * 0.95;
+    var rot = Math.atan2(m.vy, m.vx);
+    drawBill(streakTex, m.x, m.y, m.z, m.len*0.5, 0.55, rot, a, 0.78, 0.9, 1.0);
+  }
+
+  /* 烟花 */
+  var nSpark = updateSparks(dt);
+  if(nSpark > 0){
+    gl.useProgram(P_SPARK);
+    gl.bindBuffer(gl.ARRAY_BUFFER, SPB.pos);  gl.enableVertexAttribArray(A_SPARK.aPos);  gl.vertexAttribPointer(A_SPARK.aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, SPB.col);  gl.enableVertexAttribArray(A_SPARK.aColor); gl.vertexAttribPointer(A_SPARK.aColor, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, SPB.size); gl.enableVertexAttribArray(A_SPARK.aSize);  gl.vertexAttribPointer(A_SPARK.aSize, 1, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, SPB.life); gl.enableVertexAttribArray(A_SPARK.aLife);  gl.vertexAttribPointer(A_SPARK.aLife, 1, gl.FLOAT, false, 0, 0);
+    gl.uniformMatrix4fv(U_SPARK.uProj, false, projM);
+    gl.uniformMatrix4fv(U_SPARK.uView, false, viewM);
+    gl.uniform1f(U_SPARK.uScale, scale);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, glowTex);
+    gl.uniform1i(U_SPARK.uMap, 0);
+    gl.drawArrays(gl.POINTS, 0, nSpark);
+  }
+
+  /* 雪 */
+  if(!QS.nosnow){
+  gl.useProgram(P_SNOW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SB.pos);  gl.enableVertexAttribArray(A_SNOW.aPos);   gl.vertexAttribPointer(A_SNOW.aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SB.col);  gl.enableVertexAttribArray(A_SNOW.aColor); gl.vertexAttribPointer(A_SNOW.aColor, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SB.size); gl.enableVertexAttribArray(A_SNOW.aSize);  gl.vertexAttribPointer(A_SNOW.aSize, 1, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SB.phs);  gl.enableVertexAttribArray(A_SNOW.aPhase); gl.vertexAttribPointer(A_SNOW.aPhase, 1, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SB.spd);  gl.enableVertexAttribArray(A_SNOW.aSpeed); gl.vertexAttribPointer(A_SNOW.aSpeed, 1, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SB.swg);  gl.enableVertexAttribArray(A_SNOW.aSwing); gl.vertexAttribPointer(A_SNOW.aSwing, 1, gl.FLOAT, false, 0, 0);
+  gl.uniformMatrix4fv(U_SNOW.uProj, false, projM);
+  gl.uniformMatrix4fv(U_SNOW.uView, false, viewM);
+  gl.uniform1f(U_SNOW.uTime, t);
+  gl.uniform1f(U_SNOW.uScale, scale);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, glowTex);
+  gl.uniform1i(U_SNOW.uMap, 0);
+  gl.drawArrays(gl.POINTS, 0, SNOW_N);
+  }
+
+  /* --- Bloom --- */
+  passBright(sceneRT, bloomB);
+  passBlur(bloomB, bloomA, 1.0, 0);
+  passBlur(bloomA, bloomB, 0, 1.0);
+  passBlur(bloomB, bloomA, 1.6, 0);
+  passBlur(bloomA, bloomB, 0, 1.6);
+  /* 宽光晕（降到 1/4 分辨率） */
+  passBlur(bloomB, qA, 2.6, 0);
+  passBlur(qA, qB, 0, 2.6);
+  passBlur(qB, qA, 4.5, 0);
+  passBlur(qA, qB, 0, 4.5);
+
+  /* --- 合成到屏幕 --- */
+  gl.disable(gl.BLEND);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, CW, CH);
+  gl.useProgram(P_COMP);
+  bindFSQuad(A_FS_COMP);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneRT.tex); gl.uniform1i(U_COMP.uScene, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, bloomB.tex); gl.uniform1i(U_COMP.uBloom1, 1);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, qB.tex);    gl.uniform1i(U_COMP.uBloom2, 2);
+  gl.uniform2f(U_COMP.uRes, CW, CH);
+  gl.uniform1f(U_COMP.uBgAmt, QS.solo === '1' ? 0.0 : 1.0);
+  gl.uniform1f(U_COMP.uTime, t);
+  gl.uniform1f(U_COMP.uBloomAmt, QS.dbg === 'nobloom' ? 0.0 : (QS.bl ? parseFloat(QS.bl) : 1.9));
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  requestAnimationFrame(frame);
+}
+
+
+window.__stats = function(){
+  var mnx=1e9,mxx=-1e9,mny=1e9,mxy=-1e9;
+  for(var i=0;i<totalP;i++){
+    if(aPosT[i*3]<mnx) mnx=aPosT[i*3]; if(aPosT[i*3]>mxx) mxx=aPosT[i*3];
+    if(aPosT[i*3+1]<mny) mny=aPosT[i*3+1]; if(aPosT[i*3+1]>mxy) mxy=aPosT[i*3+1];
+  }
+  return { n:textPoints.pts.length, inkW:textPoints.w, inkH:textPoints.h,
+           minX:+mnx.toFixed(2), maxX:+mxx.toFixed(2), minY:+mny.toFixed(2), maxY:+mxy.toFixed(2),
+           dist:dist, rotY:+rotY.toFixed(3), camW:+(2*dist*Math.tan(FOV/2)*(CW/CH)).toFixed(2) };
+};
+canvas.addEventListener('webglcontextlost', function(e){
+  e.preventDefault();
+  var m = document.createElement('div');
+  m.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#ffd9a0;background:#05060c;font-size:15px;z-index:99;text-align:center;padding:30px;line-height:1.9';
+  m.innerHTML = '<div>显卡上下文丢失了 🥲<br>刷新一下页面就好</div>';
+  document.body.appendChild(m);
+}, false);
+
+if (QS.noui === '1') {
+  var us = document.querySelectorAll('.ui');
+  for (var ui = 0; ui < us.length; ui++) us[ui].style.display = 'none';
+}
+applyPalette(0);
+requestAnimationFrame(frame);
+setTimeout(function(){ document.getElementById('title').classList.add('on'); }, 400);
+})();
+</script>
+</body>
+</html>
