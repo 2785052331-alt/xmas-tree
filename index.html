@@ -22,6 +22,8 @@
   #title p{margin:7px 0 0;font-size:clamp(8px,2.3vw,13px);letter-spacing:.42em;color:#93acd1;text-shadow:0 0 10px rgba(120,180,255,.5)}
   #foot{bottom:calc(2.6vh + env(safe-area-inset-bottom))}
   #foot .line{font-size:clamp(10px,3.1vw,14px);color:#8fa4c6;letter-spacing:.1em}
+  #foot #visit{margin-top:8px;font-size:clamp(9px,2.7vw,12px);color:#7c8fb0;letter-spacing:.12em;opacity:.9}
+  #foot #visit b{color:#ffd9a0;font-weight:600;font-variant-numeric:tabular-nums;text-shadow:0 0 10px rgba(255,190,120,.6)}
   #foot .hint{margin-top:6px;font-size:clamp(8px,2.5vw,11px);color:#55647e;letter-spacing:.08em}
 </style>
 </head>
@@ -33,6 +35,7 @@
 </div>
 <div class="ui" id="foot">
   <div class="line">🎄 圣诞快乐 · 愿你被温柔以待 🎄</div>
+  <div class="line" id="visit">已有 <b id="busuanzi_value_site_uv">--</b> 位朋友来过</div>
   <div class="hint">拖动旋转 · 双指缩放 · 点一下换配色</div>
 </div>
 
@@ -1020,5 +1023,6 @@ requestAnimationFrame(frame);
 setTimeout(function(){ document.getElementById('title').classList.add('on'); }, 400);
 })();
 </script>
+<script async src="https://busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
 </body>
 </html>
